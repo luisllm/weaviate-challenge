@@ -1,0 +1,134 @@
+name: "destroy-prod"
+
+on:
+  workflow_dispatch:
+    branches:
+      - main
+
+env:
+  # verbosity setting for Terraform logs--test
+  TF_LOG: INFO
+  # Credentials for deployment to AWS
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  # S3 bucket for the Terraform state
+  S3_BUCKET_TF_STATE: "prod-test-llm-terraform-state"
+  TF_STATE_FILE: "vpc-eks.tfstate"
+  AWS_REGION: "us-east-1"
+  TERRAFORM_VERSION: "1.7.0"
+  WEAVIATE_NAMESPACE: "weaviate"
+  ENVIRONMENT: prod
+  EKS_CLUSTER_NAME: prod-eks-cluster
+
+jobs:
+  destroy_weaviate:
+    name: "Delete the weaviate helm deployment"
+    runs-on: ubuntu-latest
+    environment: $ENVIRONMENT
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
+      # Destroy nginx ingress controller, to automatically delete all AWS LBs created
+      - name: Destroy weaviate
+        run: |
+          helm -n $WEAVIATE_NAMESPACE uninstall weaviate
+      # Delete the weaviate namespace
+      - name: Destroy weaviate namespace
+        run: |
+          kubectl delete namespace $WEAVIATE_NAMESPACE
+      # Wait for 1min for the LB/s to get deleted
+      - name: Wait for 1 Minute
+        run: sleep 60
+
+
+  destroy_monitoring:
+    name: "Delete Prometheus and Grafana"
+    runs-on: ubuntu-latest
+    environment: $ENVIRONMENT
+    needs: [destroy_weaviate]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
+      # Destroy nginx ingress controller, to automatically delete all AWS LBs created
+      - name: Destroy monitoring
+        run: |
+          helm -n monitoring uninstall mon
+      # Delete the weaviate namespace
+      - name: Destroy monitoring namespace
+        run: |
+          kubectl delete namespace monitoring
+
+
+  destroy_weaviate_lb_aws_parameterstore:
+    name: "Delete AWS ParameterStore with the weaviate public AWS LB dns name"
+    runs-on: ubuntu-latest
+    environment: $ENVIRONMENT
+    needs: [destroy_weaviate]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+      - name: Delete Parameter from AWS Parameter Store
+        run: |
+          aws ssm delete-parameter --name "/$ENVIRONMENT/weaviate-public-load-balancer-dns"
+
+  destroy_eks_and_vpc:
+    name: "Delete the EKS cluster and VPC"
+    runs-on: ubuntu-latest
+    environment: $ENVIRONMENT
+    needs: [destroy_weaviate, destroy_monitoring, destroy_weaviate_lb_aws_parameterstore]
+    defaults:
+      run:
+        working-directory: terraform-code/vpc-eks
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: $TERRAFORM_VERSION
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config "bucket=$S3_BUCKET_TF_STATE" \
+            -backend-config "key=$TF_STATE_FILE"
+
+      - name: Fetch Variables File
+        uses: actions/checkout@v2
+        with:
+          repository: luisllm/environments
+          ref: prod  # or specify the branch, tag, or commit hash where the file resides
+          path: './environments'
+            
+      - name: Terraform Destroy
+        run: terraform destroy -var-file="../../environments/tf-config/infra.tfvars" -auto-approve
