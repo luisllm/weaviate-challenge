@@ -27,14 +27,19 @@ Proceed with the following steps if you want to deploy the solution in your AWS 
 
 ## Steps
 
-* Git clone the repo
+* Git clone the repo:
+```
+git clone https://github.com/luisllm/weaviate-challenge.git
+```
 
 * Git clone the repo with the configurations of the environments\
-  https://github.com/luisllm/environments.git
+```
+git clone https://github.com/luisllm/environments.git
+```
 
-  You can use this same config repo, or clone it and use yours to make your own changes.\
-  If you use your own config repo, you need to adapt the `repository` in the Github workflow files: `develop-deploy.yml`, `staging-deploy.yml` and `prod-deploy.yml`\
-  Example:
+You can use this same config repo, or clone it and use yours to make your own changes.\
+If you use your own config repo, you need to adapt the `repository` in the Github workflow files: `develop-deploy.yml`, `staging-deploy.yml` and `prod-deploy.yml`\
+Example:
   ```
         - name: Fetch variable file infra.tfvars from CONFIG REPO
         uses: actions/checkout@v2
@@ -44,9 +49,9 @@ Proceed with the following steps if you want to deploy the solution in your AWS 
           path: "./environments"
   ```
 
-  This config repo has 3 branches, one per environment, and holds the `infra.tfvars` with the input variables for Terraform, as well as a customized `values.yaml` for the Weaviate deployment with Helm. The structure is the following:
+This config repo has 3 branches, one per environment, and holds the `infra.tfvars` with the input variables for Terraform, as well as a customized `values.yaml` for the Weaviate deployment with Helm. The structure is the following:
 
-  ![image config-repo](./images/config-repo.jpg)
+![image config-repo](./images/config-repo.jpg)
 
 * In the github console for your repo, create the secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` with the credentials of your AWS IAM admin user\
 Improvement: use a self hosted github actions runner, and use an AWS IAM Role instead of the AWS credentials
@@ -69,7 +74,11 @@ Improvement: use a self hosted github actions runner, and use an AWS IAM Role in
 * Manually run the worflow `develop-deploy.yml` to deploy the platform in the `develop` environment.
 This workflow is also automatically run when merging a pull request into the `develop` branch
 
-![image github-workflow](./images/github-workflow.jpg)
+![image github-run-workflow](./images/github-run-workflow.jpg)
+
+* Double-check all steps of the workflow have finished successfully.
+
+![image config-repo](./images/github-workflow-steps.jpg)
 
 * Double-check in the the AWS console all the infra created: VPC, private and public subnets, NATGW, EKS cluster, LoadBalancer, Security Groups, etc
   
