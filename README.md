@@ -345,7 +345,7 @@ To reproduce the issue, I manually deleted one of the EC2s from the AWS console:
 
 ![image incident2](./images/incident2.png)
 
-The node was being shutting down and the first 5xx errors sarted to happen:
+The node was being shut down and the first 5xx errors started to happen:
 
 ![image incident2](./images/incident3.png)
 
@@ -353,6 +353,7 @@ Kubernetes marks the POD and node as being Terminating:
 
 ![image incident2](./images/incident4.png)
 
+The node error can be found in the Kubernetes events. It would be good to send these Kubernetes events somewhere else because by default they get erased after 1h:
 
 ```
 $ kubectl events
@@ -371,6 +372,10 @@ LAST SEEN           TYPE      REASON                    OBJECT                  
 41m                 Normal    DeletingNode              Node/ip-10-0-2-138.ec2.internal   Deleting node ip-10-0-2-138.ec2.internal because it does not exist in the cloud provider
 41m                 Normal    RemovingNode              Node/ip-10-0-2-138.ec2.internal   Node ip-10-0-2-138.ec2.internal event: Removing Node ip-10-0-2-138.ec2.internal from Controller
 ```
+
+I didn't spend time checking the AWS Cloudwatch logs, but one can also find useful information about different errors in these logs:
+
+![image cwlogs-eks](./images/cwlogs-eks.png)
 
 The first weaviate-0 POD starts crashing as well:
 
