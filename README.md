@@ -472,3 +472,7 @@ Defaulted container "weaviate" out of: weaviate, configure-sysctl (init)
 {"action":"restapi_management","level":"info","msg":"Serving weaviate at http://[::]:8080","time":"2024-02-28T14:25:29Z"}
 ```
 
+
+I would investigate more about the pros and cons of using EFS with Weaviate, instead of PVs/PVCs and EBS volumes, since with EFS you don't have this constraint of having the EBS volume to be used from the same AZ where it was created.\
+https://weaviate.io/developers/weaviate/installation/kubernetes#using-efs-with-weaviate
+
