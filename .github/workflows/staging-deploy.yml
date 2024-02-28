@@ -306,7 +306,7 @@ jobs:
       - name: Send test request
         id: send_test_request
         run: |
-          response_http_status_code=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://$WEAVIATE_LB_DNS:80)
+          response_http_status_code=$(curl -s -o /dev/null -w "%{http_code}" -X GET http://$WEAVIATE_LB_DNS:80/v1/.well-known/ready)
           echo "response_http_status: $response_http_status_code"
           if [ "$response_http_status_code" -eq "200" ]; then
             echo "::set-output name=infra_test_status::OK"
