@@ -326,7 +326,149 @@ https://weaviate.io/developers/weaviate/concepts/replication-architecture
 **Craft a post-mortem analysis of a hypothetical incident . Let your imagination and past experiences guide you in creating a plausible scenario.**
 **This exercise aims to reflect on potential challenges and learning opportunities within such a system setup.**
 
+Hypothetical incident: AWS EC2 (EKS node) crash, or AWS zone failure
+
+Original status:
+- 2 PODs up and running, each of them in one node and one AZ
+- Test requests working successfully with a 200 OK
+
+The test request is being sent, one every minute in a loop to observe the impact on the service. Adapt the AWS LoadBalancer dns name:
+
+```
+URL="http://<AWS_LB_DNS_NAME>/v1/.well-known/ready"
+while true; do curl -I -X GET $URL; sleep 1; done
+```
+
+![image incident1](./images/incident1.png)
+
+To reproduce the issue, I manually deleted one of the EC2s from the AWS console:
+
+![image incident2](./images/incident2.png)
+
+The node was being shutting down and the first 5xx errors sarted to happen:
+
+![image incident2](./images/incident3.png)
+
+Kubernetes marks the POD and node as being Terminating:
+
+![image incident2](./images/incident4.png)
 
 
+```
+$ kubectl events
+LAST SEEN           TYPE      REASON                    OBJECT                            MESSAGE
+41m                 Normal    NodeNotReady              Node/ip-10-0-2-138.ec2.internal   Node ip-10-0-2-138.ec2.internal status is now: NodeNotReady
+41m                 Normal    Starting                  Node/ip-10-0-2-32.ec2.internal    Starting kubelet.
+41m                 Warning   InvalidDiskCapacity       Node/ip-10-0-2-32.ec2.internal    invalid capacity 0 on image filesystem
+41m (x2 over 41m)   Normal    NodeHasNoDiskPressure     Node/ip-10-0-2-32.ec2.internal    Node ip-10-0-2-32.ec2.internal status is now: NodeHasNoDiskPressure
+41m (x2 over 41m)   Normal    NodeHasSufficientMemory   Node/ip-10-0-2-32.ec2.internal    Node ip-10-0-2-32.ec2.internal status is now: NodeHasSufficientMemory
+41m (x2 over 41m)   Normal    NodeHasSufficientPID      Node/ip-10-0-2-32.ec2.internal    Node ip-10-0-2-32.ec2.internal status is now: NodeHasSufficientPID
+41m                 Normal    NodeAllocatableEnforced   Node/ip-10-0-2-32.ec2.internal    Updated Node Allocatable limit across pods
+41m                 Normal    Synced                    Node/ip-10-0-2-32.ec2.internal    Node synced successfully
+41m                 Normal    RegisteredNode            Node/ip-10-0-2-32.ec2.internal    Node ip-10-0-2-32.ec2.internal event: Registered Node ip-10-0-2-32.ec2.internal in Controller
+41m                 Normal    Starting                  Node/ip-10-0-2-32.ec2.internal
+41m                 Normal    NodeReady                 Node/ip-10-0-2-32.ec2.internal    Node ip-10-0-2-32.ec2.internal status is now: NodeReady
+41m                 Normal    DeletingNode              Node/ip-10-0-2-138.ec2.internal   Deleting node ip-10-0-2-138.ec2.internal because it does not exist in the cloud provider
+41m                 Normal    RemovingNode              Node/ip-10-0-2-138.ec2.internal   Node ip-10-0-2-138.ec2.internal event: Removing Node ip-10-0-2-138.ec2.internal from Controller
+```
 
+The first weaviate-0 POD starts crashing as well:
+
+```
+$ kubectl -n weaviate logs -f weaviate-0
+Defaulted container "weaviate" out of: weaviate, configure-sysctl (init)
+{"action":"config_load","config_file_path":"/weaviate-config/conf.yaml","level":"info","msg":"Usage of the weaviate.conf.json file is deprecated and will be removed in the future. Please use environment variables.","time":"2024-02-28T12:05:57Z"}
+{"deprecation":{"apiType":"Configuration","id":"config-files","locations":["--config-file=\"\""],"mitigation":"Configure Weaviate using environment variables.","msg":"use of deprecated command line argument --config-file","sinceTime":"2020-09-08T09:46:00.000Z","sinceVersion":"0.22.16","status":"deprecated"},"level":"warning","msg":"use of deprecated command line argument --config-file","time":"2024-02-28T12:05:57Z"}
+{"action":"startup","default_vectorizer_module":"none","level":"info","msg":"the default vectorizer modules is set to \"none\", as a result all new schema classes without an explicit vectorizer setting, will use this vectorizer","time":"2024-02-28T12:05:57Z"}
+{"action":"startup","auto_schema_enabled":true,"level":"info","msg":"auto schema enabled setting is set to \"true\"","time":"2024-02-28T12:05:57Z"}
+{"level":"info","msg":"No resource limits set, weaviate will use all available memory and CPU. To limit resources, set LIMIT_RESOURCES=true","time":"2024-02-28T12:05:57Z"}
+{"action":"grpc_startup","level":"info","msg":"grpc server listening at [::]:50051","time":"2024-02-28T12:05:57Z"}
+{"action":"restapi_management","level":"info","msg":"Serving weaviate at http://[::]:8080","time":"2024-02-28T12:05:57Z"}
+{"level":"info","msg":" memberlist: Suspect weaviate-1 has failed, no acks received","time":"2024-02-28T14:16:36Z"}
+{"level":"info","msg":" memberlist: Suspect weaviate-1 has failed, no acks received","time":"2024-02-28T14:16:39Z"}
+{"level":"info","msg":" memberlist: Marking weaviate-1 as failed, suspect timeout reached (0 peer confirmations)","time":"2024-02-28T14:16:40Z"}
+{"level":"info","msg":" memberlist: Suspect weaviate-1 has failed, no acks received","time":"2024-02-28T14:16:43Z"}
+
+$ kubectl -n weaviate get pods
+NAME         READY   STATUS    RESTARTS   AGE
+weaviate-0   0/1     Running   0          132m
+```
+
+The second POD was being created but it was failing at being initialized: 
+
+```
+$ kubectl -n weaviate get pods
+NAME         READY   STATUS     RESTARTS   AGE
+weaviate-0   1/1     Running    0          40s
+weaviate-1   0/1     Init:0/1   0          26s
+
+$ kubectl -n weaviate logs -f weaviate-1
+Defaulted container "weaviate" out of: weaviate, configure-sysctl (init)
+Error from server (BadRequest): container "weaviate" in pod "weaviate-1" is waiting to start: PodInitializing
+```
+
+Describing the weaviate-1 POD I observed some issues with its PVC:
+
+```
+$ kubectl -n weaviate describe pod weaviate-1
+Events:
+  Type     Reason              Age   From                     Message
+  ----     ------              ----  ----                     -------
+  Normal   Scheduled           56s   default-scheduler        Successfully assigned weaviate/weaviate-1 to ip-10-0-2-32.ec2.internal
+  Warning  FailedAttachVolume  56s   attachdetach-controller  Multi-Attach error for volume "pvc-ebc13a63-22e0-4cfd-9a9c-473e27143a39" Volume is already exclusively attached to one node and can't be attached to another
+```
+
+The PVs, PVCs and StorageClass looked OK:
+
+```
+$ kubectl -n weaviate get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                               STORAGECLASS   REASON   AGE
+pvc-a08a1567-4409-45cb-b023-d5dedfc86e95   32Gi       RWO            Delete           Bound    weaviate/weaviate-data-weaviate-0   gp2                     6h29m
+pvc-ebc13a63-22e0-4cfd-9a9c-473e27143a39   32Gi       RWO            Delete           Bound    weaviate/weaviate-data-weaviate-1   gp2                     6h29m
+vagrant@ubuntu-focal64:~$
+vagrant@ubuntu-focal64:~$
+vagrant@ubuntu-focal64:~$ kubectl -n weaviate get pvc
+NAME                       STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+weaviate-data-weaviate-0   Bound    pvc-a08a1567-4409-45cb-b023-d5dedfc86e95   32Gi       RWO            gp2            6h29m
+weaviate-data-weaviate-1   Bound    pvc-ebc13a63-22e0-4cfd-9a9c-473e27143a39   32Gi       RWO            gp2            6h29m
+vagrant@ubuntu-focal64:~$
+vagrant@ubuntu-focal64:~$
+vagrant@ubuntu-focal64:~$
+vagrant@ubuntu-focal64:~$ kubectl -n weaviate get storageclass
+NAME            PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2 (default)   kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   false                  6h39m
+```
+
+I manually deleted the weaviate-1 POD to be recreated, and this time it was correctly initialized and started correctly:
+
+```
+$ kubectl -n weaviate get pods
+NAME         READY   STATUS    RESTARTS   AGE
+weaviate-0   1/1     Running   0          34m
+weaviate-1   1/1     Running   0          34m
+```
+
+Logs from both PODs OK:
+
+```
+$ kubectl -n weaviate logs -f weaviate-0
+Defaulted container "weaviate" out of: weaviate, configure-sysctl (init)
+{"action":"config_load","config_file_path":"/weaviate-config/conf.yaml","level":"info","msg":"Usage of the weaviate.conf.json file is deprecated and will be removed in the future. Please use environment variables.","time":"2024-02-28T14:22:14Z"}
+{"deprecation":{"apiType":"Configuration","id":"config-files","locations":["--config-file=\"\""],"mitigation":"Configure Weaviate using environment variables.","msg":"use of deprecated command line argument --config-file","sinceTime":"2020-09-08T09:46:00.000Z","sinceVersion":"0.22.16","status":"deprecated"},"level":"warning","msg":"use of deprecated command line argument --config-file","time":"2024-02-28T14:22:14Z"}
+{"action":"startup","default_vectorizer_module":"none","level":"info","msg":"the default vectorizer modules is set to \"none\", as a result all new schema classes without an explicit vectorizer setting, will use this vectorizer","time":"2024-02-28T14:22:14Z"}
+{"action":"startup","auto_schema_enabled":true,"level":"info","msg":"auto schema enabled setting is set to \"true\"","time":"2024-02-28T14:22:14Z"}
+{"level":"info","msg":"No resource limits set, weaviate will use all available memory and CPU. To limit resources, set LIMIT_RESOURCES=true","time":"2024-02-28T14:22:14Z"}
+{"action":"grpc_startup","level":"info","msg":"grpc server listening at [::]:50051","time":"2024-02-28T14:22:14Z"}
+{"action":"restapi_management","level":"info","msg":"Serving weaviate at http://[::]:8080","time":"2024-02-28T14:22:14Z"}
+
+$ kubectl -n weaviate logs -f weaviate-1
+Defaulted container "weaviate" out of: weaviate, configure-sysctl (init)
+{"action":"config_load","config_file_path":"/weaviate-config/conf.yaml","level":"info","msg":"Usage of the weaviate.conf.json file is deprecated and will be removed in the future. Please use environment variables.","time":"2024-02-28T14:25:29Z"}
+{"deprecation":{"apiType":"Configuration","id":"config-files","locations":["--config-file=\"\""],"mitigation":"Configure Weaviate using environment variables.","msg":"use of deprecated command line argument --config-file","sinceTime":"2020-09-08T09:46:00.000Z","sinceVersion":"0.22.16","status":"deprecated"},"level":"warning","msg":"use of deprecated command line argument --config-file","time":"2024-02-28T14:25:29Z"}
+{"action":"startup","default_vectorizer_module":"none","level":"info","msg":"the default vectorizer modules is set to \"none\", as a result all new schema classes without an explicit vectorizer setting, will use this vectorizer","time":"2024-02-28T14:25:29Z"}
+{"action":"startup","auto_schema_enabled":true,"level":"info","msg":"auto schema enabled setting is set to \"true\"","time":"2024-02-28T14:25:29Z"}
+{"level":"info","msg":"No resource limits set, weaviate will use all available memory and CPU. To limit resources, set LIMIT_RESOURCES=true","time":"2024-02-28T14:25:29Z"}
+{"action":"grpc_startup","level":"info","msg":"grpc server listening at [::]:50051","time":"2024-02-28T14:25:29Z"}
+{"action":"restapi_management","level":"info","msg":"Serving weaviate at http://[::]:8080","time":"2024-02-28T14:25:29Z"}
+```
 
